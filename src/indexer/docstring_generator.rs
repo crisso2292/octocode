@@ -106,7 +106,12 @@ pub async fn generate_docstrings(
 		for (batch_idx, &block_idx) in chunk.iter().enumerate() {
 			let block = &blocks[block_idx];
 			let code = if block.content.len() > MAX_CODE_CHARS {
-				&block.content[..MAX_CODE_CHARS]
+				// Find the nearest char boundary at or before MAX_CODE_CHARS
+				let mut end = MAX_CODE_CHARS;
+				while !block.content.is_char_boundary(end) && end > 0 {
+					end -= 1;
+				}
+				&block.content[..end]
 			} else {
 				&block.content
 			};
