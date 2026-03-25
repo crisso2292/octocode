@@ -85,11 +85,17 @@ pub async fn generate_docstrings(
 		blocks.len()
 	);
 
-	// Create LLM client
-	let llm_client = match LlmClient::from_config(config) {
-		Ok(client) => client,
-		Err(e) => {
-			warn!("Failed to create LLM client for docstrings: {}. Skipping docstring generation.", e);
+	// Create LLM client (catch panics from provider factory)
+	let llm_client = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+		LlmClient::from_config(config)
+	})) {
+		Ok(Ok(client)) => client,
+		Ok(Err(e)) => {
+			warn!("Failed to create LLM client for docstrings: {}. Skipping.", e);
+			return Ok(docstrings);
+		}
+		Err(_) => {
+			warn!("LLM client creation panicked. Skipping docstring generation.");
 			return Ok(docstrings);
 		}
 	};
