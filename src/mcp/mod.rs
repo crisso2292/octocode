@@ -27,6 +27,7 @@ pub mod lsp;
 pub mod proxy;
 pub mod semantic_code;
 pub mod server;
+pub mod sources;
 pub mod types;
 pub mod watcher;
 

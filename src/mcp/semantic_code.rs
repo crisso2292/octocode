@@ -98,6 +98,12 @@ impl SemanticCodeProvider {
 						"type": "string",
 						"description": "Filter code results by language (rust, python, typescript, go, etc.)"
 					},
+					"search_strategy": {
+						"type": "string",
+						"description": "Search strategy: 'hybrid' (vector + BM25 keyword, best quality, default), 'vector' (semantic only), 'keyword' (BM25 text match only)",
+						"enum": ["hybrid", "vector", "keyword"],
+						"default": "hybrid"
+					},
 				},
 				"required": ["query"],
 				"additionalProperties": false
@@ -285,6 +291,31 @@ impl SemanticCodeProvider {
 			None
 		};
 
+		// Parse search_strategy and apply per-query override to config
+		let search_strategy = arguments
+			.get("search_strategy")
+			.and_then(|v| v.as_str())
+			.unwrap_or("hybrid");
+
+		if !["hybrid", "vector", "keyword"].contains(&search_strategy) {
+			return Err(McpError::invalid_params(
+				format!(
+					"Invalid search_strategy '{}': must be one of 'hybrid', 'vector', or 'keyword'",
+					search_strategy
+				),
+				"semantic_search",
+			));
+		}
+
+		// Clone config and override hybrid setting based on search_strategy
+		let mut config = self.config.clone();
+		match search_strategy {
+			"hybrid" => config.search.hybrid.enabled = true,
+			"vector" => config.search.hybrid.enabled = false,
+			"keyword" => config.search.hybrid.enabled = true, // Uses hybrid path but keyword-only handled at store level
+			_ => {}
+		}
+
 		// Use structured logging instead of console output for MCP protocol compliance
 		debug!(
 			queries = ?queries,
@@ -293,6 +324,7 @@ impl SemanticCodeProvider {
 			max_results = %max_results,
 			similarity_threshold = %similarity_threshold,
 			language_filter = ?language_filter,
+			search_strategy = %search_strategy,
 			working_directory = %self.working_directory.display(),
 			"Executing semantic code search with {} queries",
 			queries.len()
@@ -331,7 +363,7 @@ impl SemanticCodeProvider {
 				max_results,
 				similarity_threshold,
 				language_filter.as_deref(),
-				&self.config,
+				&config,
 			)
 			.await
 		} else {
@@ -343,7 +375,7 @@ impl SemanticCodeProvider {
 				max_results,
 				similarity_threshold,
 				language_filter.as_deref(),
-				&self.config,
+				&config,
 			)
 			.await
 		};

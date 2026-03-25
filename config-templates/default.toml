@@ -39,8 +39,8 @@ top_k_candidates = 50
 final_top_k = 10
 
 [search.hybrid]
-# Enable hybrid search combining vector similarity with keyword matching
-enabled = false
+# Enable hybrid search combining vector similarity with keyword matching (BM25 + vector with RRF fusion)
+enabled = true
 # Weight for vector similarity signal (0.0-1.0)
 default_vector_weight = 0.7
 # Weight for keyword matching signal (0.0-1.0)
@@ -58,8 +58,15 @@ keyword_title_weight = 3.0
 code_model = "voyage:voyage-code-3"
 text_model = "voyage:voyage-3.5-lite"
 
-# API keys are sourced from environment variables:
-# JINA_API_KEY, VOYAGE_API_KEY, GOOGLE_API_KEY
+# Supported embedding providers (format: "provider:model"):
+#   voyage   - Voyage AI (VOYAGE_API_KEY) — best for code: voyage-code-3
+#   openai   - OpenAI (OPENAI_API_KEY) — text-embedding-3-small, text-embedding-3-large
+#   azure    - Azure OpenAI (AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT) — same models as OpenAI
+#   jina     - Jina AI (JINA_API_KEY) — jina-embeddings-v2-base-code
+#   google   - Google AI (GOOGLE_API_KEY)
+#   fastembed - Local inference (no API key needed)
+#
+# Azure example: code_model = "azure:text-embedding-3-large"
 
 [graphrag]
 enabled = false

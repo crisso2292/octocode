@@ -13,9 +13,13 @@
 // limitations under the License.
 
 //! Re-export embedding functionality from octolib and add octocode-specific logic
+//! Extends octolib with Azure OpenAI embedding provider support.
 
 use crate::config::Config;
 use anyhow::Result;
+
+// Azure OpenAI provider (octocode-specific extension)
+pub mod azure;
 
 // Re-export core functionality from octolib::embedding
 pub use octolib::embedding::{
@@ -34,6 +38,28 @@ pub mod types {
 // Create a provider module for backward compatibility
 pub mod provider {
 	pub use octolib::embedding::provider::*;
+}
+
+/// Check if a provider:model string refers to the Azure provider.
+fn is_azure_provider(provider_str: &str) -> bool {
+	provider_str.eq_ignore_ascii_case("azure") || provider_str.eq_ignore_ascii_case("azure_openai")
+}
+
+/// Get vector dimension for any provider, including Azure (which octolib doesn't know about).
+/// This is the octocode-level extension point for dimension resolution.
+pub async fn get_vector_dimension_extended(provider_model: &str) -> Result<usize> {
+	let (provider_str, model) = provider_model.split_once(':').ok_or_else(|| {
+		anyhow::anyhow!("Invalid model format '{}': expected 'provider:model'", provider_model)
+	})?;
+
+	if is_azure_provider(provider_str) {
+		return azure::get_dimension(model);
+	}
+
+	// Delegate to octolib for all other providers
+	let (provider, model) = parse_provider_model(provider_model)?;
+	let provider_impl = create_embedding_provider_from_parts(&provider, &model).await?;
+	Ok(provider_impl.get_dimension())
 }
 
 /// Configuration for embedding generation (octocode-specific)
@@ -73,7 +99,7 @@ impl From<&Config> for EmbeddingGenerationConfig {
 }
 
 /// Generate embeddings based on configured provider (supports provider:model format)
-/// Compatibility wrapper for octocode Config
+/// Handles Azure provider locally, delegates all others to octolib.
 pub async fn generate_embeddings(
 	contents: &str,
 	is_code: bool,
@@ -81,25 +107,28 @@ pub async fn generate_embeddings(
 ) -> Result<Vec<f32>> {
 	let embedding_config = EmbeddingGenerationConfig::from(config);
 
-	// Get the model string from config
 	let model_string = if is_code {
 		&embedding_config.code_model
 	} else {
 		&embedding_config.text_model
 	};
 
-	// Parse provider and model from the string
 	let (provider, model) = if let Some((p, m)) = model_string.split_once(':') {
 		(p, m)
 	} else {
 		return Err(anyhow::anyhow!("Invalid model format: {}", model_string));
 	};
 
+	// Intercept Azure provider — octolib doesn't know about it
+	if is_azure_provider(provider) {
+		return azure::generate_embedding(contents, model).await;
+	}
+
 	octolib::embedding::generate_embeddings(contents, provider, model).await
 }
 
 /// Generate batch embeddings based on configured provider (supports provider:model format)
-/// Compatibility wrapper for octocode Config
+/// Handles Azure provider locally, delegates all others to octolib.
 pub async fn generate_embeddings_batch(
 	texts: Vec<String>,
 	is_code: bool,
@@ -108,19 +137,35 @@ pub async fn generate_embeddings_batch(
 ) -> Result<Vec<Vec<f32>>> {
 	let embedding_config = EmbeddingGenerationConfig::from(config);
 
-	// Get the model string from config
 	let model_string = if is_code {
 		&embedding_config.code_model
 	} else {
 		&embedding_config.text_model
 	};
 
-	// Parse provider and model from the string
 	let (provider, model) = if let Some((p, m)) = model_string.split_once(':') {
 		(p, m)
 	} else {
 		return Err(anyhow::anyhow!("Invalid model format: {}", model_string));
 	};
+
+	// Intercept Azure provider — octolib doesn't know about it
+	if is_azure_provider(provider) {
+		// Azure doesn't have native token-aware batching, so we split manually
+		let batches = split_texts_into_token_limited_batches(
+			texts,
+			embedding_config.batch_size,
+			embedding_config.max_tokens_per_batch,
+		);
+
+		let mut all_embeddings = Vec::new();
+		for batch in batches {
+			let mut batch_embeddings =
+				azure::generate_embeddings_batch(batch, model, input_type.clone()).await?;
+			all_embeddings.append(&mut batch_embeddings);
+		}
+		return Ok(all_embeddings);
+	}
 
 	octolib::embedding::generate_embeddings_batch(
 		texts,
@@ -149,7 +194,6 @@ pub async fn generate_search_embeddings(
 ) -> Result<SearchModeEmbeddings> {
 	match mode {
 		"code" => {
-			// Use code model for code searches only
 			let embeddings = generate_embeddings(query, true, config).await?;
 			Ok(SearchModeEmbeddings {
 				code_embeddings: Some(embeddings),
@@ -157,7 +201,6 @@ pub async fn generate_search_embeddings(
 			})
 		}
 		"docs" | "text" => {
-			// Use text model for documents and text searches only
 			let embeddings = generate_embeddings(query, false, config).await?;
 			Ok(SearchModeEmbeddings {
 				code_embeddings: None,
@@ -165,21 +208,17 @@ pub async fn generate_search_embeddings(
 			})
 		}
 		"all" => {
-			// For "all" mode, check if code and text models are different
-			// If different, generate separate embeddings; if same, use one set
 			let embedding_config = EmbeddingGenerationConfig::from(config);
 			let code_model = &embedding_config.code_model;
 			let text_model = &embedding_config.text_model;
 
 			if code_model == text_model {
-				// Same model for both - generate once and reuse
 				let embeddings = generate_embeddings(query, true, config).await?;
 				Ok(SearchModeEmbeddings {
 					code_embeddings: Some(embeddings.clone()),
 					text_embeddings: Some(embeddings),
 				})
 			} else {
-				// Different models - generate separate embeddings
 				let code_embeddings = generate_embeddings(query, true, config).await?;
 				let text_embeddings = generate_embeddings(query, false, config).await?;
 				Ok(SearchModeEmbeddings {

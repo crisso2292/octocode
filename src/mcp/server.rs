@@ -29,6 +29,7 @@ use crate::indexer;
 use crate::lock::IndexLock;
 use crate::mcp::graphrag::GraphRagProvider;
 use crate::mcp::http::{handle_http_connection, HttpServerState};
+use crate::mcp::sources::SourcesProvider;
 use crate::mcp::logging::{
 	init_mcp_logging, log_critical_anyhow_error, log_critical_error, log_indexing_operation,
 	log_mcp_request, log_mcp_response, log_watcher_event,
@@ -61,6 +62,7 @@ const MCP_IO_TIMEOUT_MS: u64 = 30_000; // 30 seconds for individual I/O operatio
 pub struct McpServer {
 	semantic_code: SemanticCodeProvider,
 	graphrag: Option<GraphRagProvider>,
+	sources_provider: SourcesProvider,
 	lsp: Option<Arc<Mutex<crate::mcp::lsp::LspProvider>>>,
 	debug: bool,
 	working_directory: std::path::PathBuf,
@@ -102,6 +104,7 @@ impl McpServer {
 
 		let semantic_code = SemanticCodeProvider::new(config.clone(), working_directory.clone());
 		let graphrag = GraphRagProvider::new(config.clone(), working_directory.clone());
+		let sources_provider = SourcesProvider::new(config.clone(), working_directory.clone());
 
 		// Initialize LSP provider if command is provided (lazy initialization)
 		let lsp = if let Some(command) = lsp_command {
@@ -131,6 +134,7 @@ impl McpServer {
 		Ok(Self {
 			semantic_code,
 			graphrag,
+			sources_provider,
 			lsp,
 			debug,
 			working_directory,
@@ -925,6 +929,9 @@ impl McpServer {
 			tools.push(GraphRagProvider::get_tool_definition());
 		}
 
+		// Add source management tools
+		tools.extend(SourcesProvider::get_tool_definitions());
+
 		// Add LSP tools if LSP provider is configured (always show tools when --with-lsp is used)
 		if self.lsp.is_some() {
 			tools.extend(crate::mcp::lsp::LspProvider::get_tool_definitions());
@@ -1002,6 +1009,10 @@ impl McpServer {
 		let result = match tool_name {
 			"semantic_search" => self.semantic_code.execute_search(arguments).await,
 			"view_signatures" => self.semantic_code.execute_view_signatures(arguments).await,
+			"add_source" => self.sources_provider.execute_add_source(arguments).await,
+			"remove_source" => self.sources_provider.execute_remove_source(arguments).await,
+			"list_sources" => self.sources_provider.execute_list_sources(arguments).await,
+			"index_source" => self.sources_provider.execute_index_source(arguments).await,
 			"graphrag" => match &self.graphrag {
 				Some(provider) => provider.execute(arguments).await,
 				None => Err(McpError::method_not_found("GraphRAG is not enabled in the current configuration. Please enable GraphRAG in octocode.toml to use relationship-aware search.", "graphrag")),
@@ -1050,7 +1061,7 @@ impl McpServer {
 				None => Err(McpError::method_not_found("LSP server is not available. Start MCP server with --with-lsp=\"<command>\" to enable LSP features.", "lsp_completion")),
 			},
 			_ => {
-			let available_tools = format!("semantic_search, view_signatures{}{}",
+			let available_tools = format!("semantic_search, view_signatures, add_source, remove_source, list_sources, index_source{}{}",
 				if self.graphrag.is_some() { ", graphrag" } else { "" },
 				if self.lsp.is_some() { ", lsp_goto_definition, lsp_hover, lsp_find_references, lsp_document_symbols, lsp_workspace_symbols, lsp_completion" } else { "" }
 			);

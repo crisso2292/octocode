@@ -55,6 +55,27 @@ impl GitUtils {
 		Ok(String::from_utf8(output.stdout)?.trim().to_string())
 	}
 
+	/// Get current git branch name, or None if detached HEAD.
+	pub fn get_current_branch(repo_path: &Path) -> Option<String> {
+		let output = Command::new("git")
+			.args(["rev-parse", "--abbrev-ref", "HEAD"])
+			.current_dir(repo_path)
+			.output()
+			.ok()?;
+
+		if output.status.success() {
+			let branch = String::from_utf8(output.stdout).ok()?.trim().to_string();
+			if branch == "HEAD" {
+				// Detached HEAD state
+				None
+			} else {
+				Some(branch)
+			}
+		} else {
+			None
+		}
+	}
+
 	/// Get files changed between two commits (committed changes only, no unstaged)
 	pub fn get_changed_files_since_commit(
 		repo_path: &Path,

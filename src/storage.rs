@@ -147,9 +147,23 @@ pub fn get_project_storage_path(project_path: &Path) -> Result<PathBuf> {
 	Ok(system_dir.join(project_id))
 }
 
-/// Get the database path for a specific project
+/// Get the database path for a specific project.
+/// If branch-aware indexing is enabled and the project is a git repo,
+/// returns a branch-specific storage path.
 pub fn get_project_database_path(project_path: &Path) -> Result<PathBuf> {
 	let project_storage = get_project_storage_path(project_path)?;
+
+	// Check if branch-aware indexing is desired
+	if let Ok(branch_aware) = std::env::var("OCTOCODE_BRANCH_AWARE") {
+		if branch_aware == "1" || branch_aware.eq_ignore_ascii_case("true") {
+			if let Some(branch) = crate::indexer::git::get_current_branch(project_path) {
+				// Sanitize branch name for filesystem (replace / with __)
+				let safe_branch = branch.replace('/', "__");
+				return Ok(project_storage.join("branches").join(safe_branch));
+			}
+		}
+	}
+
 	Ok(project_storage.join("storage"))
 }
 

@@ -232,6 +232,11 @@ pub mod git {
 	pub fn get_all_changed_files(repo_path: &Path) -> Result<Vec<String>> {
 		GitUtils::get_all_changed_files(repo_path)
 	}
+
+	/// Get current git branch name, or None if detached HEAD.
+	pub fn get_current_branch(repo_path: &Path) -> Option<String> {
+		GitUtils::get_current_branch(repo_path)
+	}
 }
 
 /// Get file modification time as seconds since Unix epoch
