@@ -18,6 +18,7 @@
 pub mod batch_processor; // Batch processing utilities for embedding operations
 pub mod code_region_extractor; // Code region extraction and smart merging utilities
 pub mod differential_processor; // Differential processing utilities for incremental updates
+pub mod docstring_generator; // LLM-generated docstrings for enhanced retrieval (Greptile's approach)
 pub mod file_processor; // File processing utilities for text and markdown files
 pub mod graph_optimization;
 pub mod graphrag; // GraphRAG generation for code relationships (modular implementation)

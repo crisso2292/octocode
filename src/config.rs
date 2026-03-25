@@ -80,6 +80,20 @@ impl Default for LlmConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocstringConfig {
+	/// Enable LLM-generated docstrings for enhanced retrieval (Greptile's approach).
+	/// When enabled, large code blocks get an LLM-generated natural language description
+	/// prepended to their embedding, improving search relevance by ~12%.
+	pub enabled: bool,
+}
+
+impl Default for DocstringConfig {
+	fn default() -> Self {
+		Self { enabled: false }
+	}
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexConfig {
 	pub chunk_size: usize,
 	pub chunk_overlap: usize,
@@ -98,6 +112,10 @@ pub struct IndexConfig {
 
 	/// Require git repository for indexing (default: true)
 	pub require_git: bool,
+
+	/// LLM-generated docstrings for better search retrieval
+	#[serde(default)]
+	pub docstrings: DocstringConfig,
 }
 
 impl Default for IndexConfig {
@@ -109,6 +127,7 @@ impl Default for IndexConfig {
 			embeddings_max_tokens_per_batch: 100000,
 			flush_frequency: 2,
 			require_git: true,
+			docstrings: DocstringConfig::default(),
 		}
 	}
 }

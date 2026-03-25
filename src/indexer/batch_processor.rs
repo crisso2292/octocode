@@ -78,22 +78,27 @@ pub async fn process_code_blocks_batch(
 ) -> Result<()> {
 	let start_time = std::time::Instant::now();
 
-	// Prepare pure content for embeddings (minimal metadata noise)
-	let contents: Vec<String> = blocks
-		.iter()
-		.map(|block| {
-			let mut parts = Vec::new();
-			// Add only block symbols (relevant context)
-			if !block.symbols.is_empty() {
-				for symbol in &block.symbols {
-					parts.push(symbol.clone());
+	// Generate LLM docstrings if enabled (Greptile's approach: ~12% better retrieval)
+	let contents = if config.index.docstrings.enabled {
+		let docstrings =
+			crate::indexer::docstring_generator::generate_docstrings(blocks, config).await?;
+		crate::indexer::docstring_generator::enrich_contents_for_embedding(blocks, &docstrings)
+	} else {
+		// Standard content preparation (no LLM docstrings)
+		blocks
+			.iter()
+			.map(|block| {
+				let mut parts = Vec::new();
+				if !block.symbols.is_empty() {
+					for symbol in &block.symbols {
+						parts.push(symbol.clone());
+					}
 				}
-			}
-			// Add actual code content
-			parts.push(block.content.clone());
-			parts.join("\n")
-		})
-		.collect();
+				parts.push(block.content.clone());
+				parts.join("\n")
+			})
+			.collect()
+	};
 
 	// Generate embeddings with symmetric input type (None) for code-to-code search
 	let embeddings = crate::embedding::generate_embeddings_batch(
