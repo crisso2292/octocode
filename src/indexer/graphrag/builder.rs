@@ -55,17 +55,28 @@ impl GraphBuilder {
 		// Initialize embedding provider from config (using text model for graph descriptions)
 		// GraphRAG uses text embeddings for file descriptions and relationships, not code embeddings
 		let model_string = &config.embedding.text_model;
-		let Ok((provider_type, model)) = parse_provider_model(model_string) else {
-			return Err(anyhow::anyhow!(
-				"Failed to parse provider model: {}",
-				model_string
-			));
+
+		// Check if Azure provider (not known to octolib) — create a wrapper
+		let embedding_provider: Arc<Box<dyn EmbeddingProvider>> = if crate::embedding::azure::is_supported(
+			model_string.split_once(':').map(|(_, m)| m).unwrap_or(""),
+		) && model_string.split_once(':').map(|(p, _)| p.eq_ignore_ascii_case("azure")).unwrap_or(false)
+		{
+			Arc::new(Box::new(crate::indexer::graphrag::AzureEmbeddingWrapper {
+				model: model_string.split_once(':').map(|(_, m)| m.to_string()).unwrap_or_default(),
+			}))
+		} else {
+			let Ok((provider_type, model)) = parse_provider_model(model_string) else {
+				return Err(anyhow::anyhow!(
+					"Failed to parse provider model: {}",
+					model_string
+				));
+			};
+			Arc::new(
+				create_embedding_provider_from_parts(&provider_type, &model)
+					.await
+					.context("Failed to initialize embedding provider from config")?,
+			)
 		};
-		let embedding_provider = Arc::new(
-			create_embedding_provider_from_parts(&provider_type, &model)
-				.await
-				.context("Failed to initialize embedding provider from config")?,
-		);
 
 		// Initialize the store for database access
 		let store = Store::new().await?;

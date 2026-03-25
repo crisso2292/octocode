@@ -36,6 +36,31 @@ pub use utils::{
 use crate::config::Config;
 use anyhow::Result;
 
+/// Wrapper that adapts the Azure embedding module to the EmbeddingProvider trait.
+/// Used by GraphRAG when the configured embedding model is "azure:*".
+pub struct AzureEmbeddingWrapper {
+	pub model: String,
+}
+
+#[async_trait::async_trait]
+impl crate::embedding::EmbeddingProvider for AzureEmbeddingWrapper {
+	async fn generate_embedding(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+		crate::embedding::azure::generate_embedding(text, &self.model).await
+	}
+
+	async fn generate_embeddings_batch(
+		&self,
+		texts: Vec<String>,
+		input_type: crate::embedding::InputType,
+	) -> anyhow::Result<Vec<Vec<f32>>> {
+		crate::embedding::azure::generate_embeddings_batch(texts, &self.model, input_type).await
+	}
+
+	fn get_dimension(&self) -> usize {
+		crate::embedding::azure::get_dimension(&self.model).unwrap_or(3072)
+	}
+}
+
 #[derive(Clone)]
 pub struct GraphRAG {
 	config: Config,
