@@ -89,7 +89,7 @@ pub struct DocstringConfig {
 
 impl Default for DocstringConfig {
 	fn default() -> Self {
-		Self { enabled: false }
+		Self { enabled: true }
 	}
 }
 
