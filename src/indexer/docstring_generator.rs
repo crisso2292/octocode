@@ -139,7 +139,6 @@ pub async fn generate_docstrings(
 				for (batch_idx, &block_idx) in chunk.iter().enumerate() {
 					if let Some(desc) = lines.get(batch_idx) {
 						let desc = desc.to_string();
-						// Basic validation: must be reasonable length
 						if desc.len() > 10 && desc.len() < 500 {
 							docstrings[block_idx] = Some(desc);
 						}

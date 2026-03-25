@@ -339,7 +339,7 @@ mod tests {
 		// Use template loading instead of Config::default() to avoid GraphRAG panic
 		let config = Config::load_from_template().expect("Failed to load template config");
 		assert_eq!(config.version, 1);
-		assert_eq!(config.llm.model, "openrouter:openai/gpt-4o-mini");
+		assert_eq!(config.llm.model, "amazon:anthropic.claude-haiku-4-5-20251001-v1:0");
 		assert_eq!(config.index.chunk_size, 2000);
 		assert_eq!(config.search.max_results, 20);
 
@@ -387,7 +387,7 @@ mod tests {
 
 		let config = result.expect("Template config should load successfully");
 		assert_eq!(config.version, 1);
-		assert_eq!(config.llm.model, "openrouter:openai/gpt-4o-mini");
+		assert_eq!(config.llm.model, "amazon:anthropic.claude-haiku-4-5-20251001-v1:0");
 		assert_eq!(config.index.chunk_size, 2000);
 		assert_eq!(config.search.max_results, 20);
 		assert_eq!(config.embedding.code_model, "voyage:voyage-code-3");

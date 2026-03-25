@@ -21,48 +21,93 @@ use crate::config::Config;
 use anyhow::Result;
 use serde::de::DeserializeOwned;
 
+// Azure OpenAI LLM provider (uses /chat/completions, not /responses)
+pub mod azure;
+
 // Re-export octolib types for convenience
 pub use octolib::llm::{
 	AiProvider, ChatCompletionParams, Message, MessageBuilder, ProviderFactory, ProviderResponse,
 	StructuredOutputRequest, TokenUsage,
 };
 
-/// LLM client wrapper that integrates octolib with octocode configuration
-/// LLM client wrapper that integrates octolib with octocode configuration
+/// LLM client wrapper that integrates octolib with octocode configuration.
+/// Supports Azure OpenAI via "azure:model" (intercepted before octolib).
 pub struct LlmClient {
-	provider: Box<dyn AiProvider>,
+	provider: Option<Box<dyn AiProvider>>,
 	model: String,
 	temperature: f32,
 	max_tokens: usize,
+	is_azure: bool,
 }
 
 impl LlmClient {
-	/// Create LlmClient from octocode Config
+	/// Create LlmClient from octocode Config.
+	/// Intercepts "azure" provider (uses /chat/completions), delegates others to octolib.
 	pub fn from_config(config: &Config) -> Result<Self> {
-		let (provider, model) = ProviderFactory::get_provider_for_model(&config.llm.model)?;
+		if azure::is_azure_llm(&config.llm.model) {
+			let model = config.llm.model.split_once(':')
+				.map(|(_, m)| m.to_string())
+				.unwrap_or_default();
+			return Ok(Self {
+				provider: None,
+				model,
+				temperature: config.llm.temperature,
+				max_tokens: config.llm.max_tokens,
+				is_azure: true,
+			});
+		}
 
+		let (provider, model) = ProviderFactory::get_provider_for_model(&config.llm.model)?;
 		Ok(Self {
-			provider,
+			provider: Some(provider),
 			model,
 			temperature: config.llm.temperature,
 			max_tokens: config.llm.max_tokens,
+			is_azure: false,
 		})
 	}
 
 	/// Create LlmClient with custom model (overrides config)
 	pub fn with_model(config: &Config, model_str: &str) -> Result<Self> {
-		let (provider, model) = ProviderFactory::get_provider_for_model(model_str)?;
+		if azure::is_azure_llm(model_str) {
+			let model = model_str.split_once(':')
+				.map(|(_, m)| m.to_string())
+				.unwrap_or_default();
+			return Ok(Self {
+				provider: None,
+				model,
+				temperature: config.llm.temperature,
+				max_tokens: config.llm.max_tokens,
+				is_azure: true,
+			});
+		}
 
+		let (provider, model) = ProviderFactory::get_provider_for_model(model_str)?;
 		Ok(Self {
-			provider,
+			provider: Some(provider),
 			model,
 			temperature: config.llm.temperature,
 			max_tokens: config.llm.max_tokens,
+			is_azure: false,
 		})
 	}
 
 	/// Simple chat completion returning text response
 	pub async fn chat_completion(&self, messages: Vec<Message>) -> Result<String> {
+		// Azure path: direct HTTP to /chat/completions
+		if self.is_azure {
+			return azure::chat_completion(
+				&messages,
+				&self.model,
+				self.temperature,
+				self.max_tokens as u32,
+			)
+			.await;
+		}
+
+		let provider = self.provider.as_ref()
+			.ok_or_else(|| anyhow::anyhow!("No LLM provider configured"))?;
+
 		let params = ChatCompletionParams::new(
 			&messages,
 			&self.model,
@@ -72,9 +117,8 @@ impl LlmClient {
 			self.max_tokens as u32, // max_tokens (convert usize to u32)
 		);
 
-		let response = self.provider.chat_completion(params).await?;
+		let response = provider.chat_completion(params).await?;
 
-		// Log token usage if available from exchange
 		if let Some(usage) = &response.exchange.usage {
 			tracing::debug!(
 				"LLM tokens: input={}, output={}, total={}",
@@ -82,7 +126,6 @@ impl LlmClient {
 				usage.output_tokens,
 				usage.total_tokens
 			);
-
 			if let Some(cost) = usage.cost {
 				tracing::debug!("LLM cost: ${:.6}", cost);
 			}
@@ -91,13 +134,20 @@ impl LlmClient {
 		Ok(response.content)
 	}
 
+	/// Get the underlying octolib provider (errors if Azure — Azure doesn't go through octolib)
+	fn get_provider(&self) -> Result<&dyn AiProvider> {
+		self.provider.as_deref().ok_or_else(|| {
+			anyhow::anyhow!("Azure LLM provider doesn't support this operation — use chat_completion() instead")
+		})
+	}
+
 	/// Chat completion with structured JSON output
 	pub async fn chat_completion_structured<T: DeserializeOwned>(
 		&self,
 		messages: Vec<Message>,
 	) -> Result<T> {
 		// Check if provider supports structured output
-		if !self.provider.supports_structured_output(&self.model) {
+		if !self.get_provider()?.supports_structured_output(&self.model) {
 			return Err(anyhow::anyhow!(
 				"Provider does not support structured output for model: {}",
 				self.model
@@ -115,9 +165,8 @@ impl LlmClient {
 		)
 		.with_structured_output(structured_request);
 
-		let response = self.provider.chat_completion(params).await?;
+		let response = self.get_provider()?.chat_completion(params).await?;
 
-		// Log token usage
 		if let Some(usage) = &response.exchange.usage {
 			tracing::debug!(
 				"LLM tokens (structured): input={}, output={}, total={}",
@@ -125,18 +174,15 @@ impl LlmClient {
 				usage.output_tokens,
 				usage.total_tokens
 			);
-
 			if let Some(cost) = usage.cost {
 				tracing::debug!("LLM cost: ${:.6}", cost);
 			}
 		}
 
-		// Parse structured output
 		if let Some(structured) = response.structured_output {
 			let result: T = serde_json::from_value(structured)?;
 			Ok(result)
 		} else {
-			// Fallback: try to parse content as JSON
 			let result: T = serde_json::from_str(&response.content)?;
 			Ok(result)
 		}
@@ -148,16 +194,20 @@ impl LlmClient {
 		messages: Vec<Message>,
 		temperature: f32,
 	) -> Result<String> {
+		if self.is_azure {
+			return azure::chat_completion(&messages, &self.model, temperature, self.max_tokens as u32).await;
+		}
+
 		let params = ChatCompletionParams::new(
 			&messages,
 			&self.model,
 			temperature,
-			1.0,                    // top_p
-			50,                     // min_tokens
-			self.max_tokens as u32, // max_tokens (convert usize to u32)
+			1.0,
+			50,
+			self.max_tokens as u32,
 		);
 
-		let response = self.provider.chat_completion(params).await?;
+		let response = self.get_provider()?.chat_completion(params).await?;
 
 		// Log token usage
 		if let Some(usage) = &response.exchange.usage {
@@ -183,7 +233,12 @@ impl LlmClient {
 
 	/// Check if provider supports structured output
 	pub fn supports_structured_output(&self) -> bool {
-		self.provider.supports_structured_output(&self.model)
+		if self.is_azure {
+			return true; // Azure GPT-4.1 supports structured output
+		}
+		self.get_provider()
+			.map(|p| p.supports_structured_output(&self.model))
+			.unwrap_or(false)
 	}
 
 	/// Chat completion with JSON output (tries structured output, falls back to markdown stripping)
@@ -195,10 +250,11 @@ impl LlmClient {
 	/// # Returns
 	/// Parsed JSON value or an error
 	pub async fn chat_completion_json(&self, messages: Vec<Message>) -> Result<serde_json::Value> {
-		let supports_structured = self.provider.supports_structured_output(&self.model);
+		let supports_structured = self.supports_structured_output();
+		let provider_name = if self.is_azure { "azure" } else { self.get_provider().map(|p| p.name()).unwrap_or("unknown") };
 		tracing::debug!(
 			"Provider {} supports structured output for model {}: {}",
-			self.provider.name(),
+			provider_name,
 			self.model,
 			supports_structured
 		);
@@ -216,7 +272,7 @@ impl LlmClient {
 			)
 			.with_structured_output(structured_request);
 
-			let response = self.provider.chat_completion(params).await?;
+			let response = self.get_provider()?.chat_completion(params).await?;
 
 			// Log token usage
 			if let Some(usage) = &response.exchange.usage {
