@@ -15,7 +15,28 @@
 use anyhow::Result;
 use clap::Args;
 use octocode::config::Config;
+use octocode::embedding::azure;
 use octocode::embedding::types::{parse_provider_model, EmbeddingProviderType};
+
+/// Validate a provider:model string, supporting Azure in addition to octolib providers.
+fn validate_embedding_model(model_str: &str) -> Result<String> {
+	let (provider, model) = model_str.split_once(':').ok_or_else(|| {
+		anyhow::anyhow!("Model format must be 'provider:model' (e.g., 'azure:text-embedding-3-large')")
+	})?;
+
+	if provider.eq_ignore_ascii_case("azure") || provider.eq_ignore_ascii_case("azure_openai") {
+		if azure::is_supported(model) {
+			return Ok(format!("Azure ({}d)", azure::get_dimension(model).unwrap_or(0)));
+		}
+		return Err(anyhow::anyhow!(
+			"Unsupported Azure model '{}'. Supported: text-embedding-3-large, text-embedding-3-small, text-embedding-ada-002",
+			model
+		));
+	}
+
+	let (provider_type, _) = parse_provider_model(model_str)?;
+	Ok(format!("{:?}", provider_type))
+}
 
 #[derive(Args)]
 pub struct ConfigArgs {
@@ -92,52 +113,40 @@ pub fn execute(args: &ConfigArgs, mut config: Config) -> Result<()> {
 
 		// Embedding Configuration
 		println!("🔍 Embedding Configuration:");
-		let active_provider = config.embedding.get_active_provider();
-		println!("   Active provider: {:?} (auto-detected)", active_provider);
+		// Detect provider from code_model string (handles Azure + octolib)
+		let provider_str = config.embedding.code_model.split(':').next().unwrap_or("unknown");
+		let is_azure = provider_str.eq_ignore_ascii_case("azure") || provider_str.eq_ignore_ascii_case("azure_openai");
+		if is_azure {
+			println!("   Active provider: Azure OpenAI");
+		} else if let Ok(p) = config.embedding.get_active_provider() {
+			println!("   Active provider: {:?} (auto-detected)", p);
+		} else {
+			println!("   Active provider: {} (unknown)", provider_str);
+		}
 		println!("   Code model: {}", config.embedding.code_model);
 		println!("   Text model: {}", config.embedding.text_model);
 
-		// Show API key status for providers that need them
-		match active_provider {
-			Ok(EmbeddingProviderType::Jina) => {
-				let api_key_status = if config
-					.embedding
-					.get_api_key(&EmbeddingProviderType::Jina)
-					.is_some()
-				{
-					"✅ Set"
-				} else {
-					"❌ Not set"
-				};
-				println!("   Jina API key: {}", api_key_status);
-			}
-			Ok(EmbeddingProviderType::Voyage) => {
-				let api_key_status = if config
-					.embedding
-					.get_api_key(&EmbeddingProviderType::Voyage)
-					.is_some()
-				{
-					"✅ Set"
-				} else {
-					"❌ Not set"
-				};
-				println!("   Voyage API key: {}", api_key_status);
-			}
-			Ok(EmbeddingProviderType::Google) => {
-				let api_key_status = if config
-					.embedding
-					.get_api_key(&EmbeddingProviderType::Google)
-					.is_some()
-				{
-					"✅ Set"
-				} else {
-					"❌ Not set"
-				};
-				println!("   Google API key: {}", api_key_status);
-			}
-			_ => {
-				// FastEmbed and SentenceTransformer don't need API keys
-				println!("   API key: Not required");
+		// Show API key status
+		if is_azure {
+			let key_status = if std::env::var("AZURE_OPENAI_API_KEY").is_ok() { "✅ Set" } else { "❌ Not set" };
+			let endpoint_status = if std::env::var("AZURE_OPENAI_ENDPOINT").is_ok() { "✅ Set" } else { "❌ Not set" };
+			println!("   Azure API key: {}", key_status);
+			println!("   Azure endpoint: {}", endpoint_status);
+		} else {
+			match config.embedding.get_active_provider() {
+				Ok(ref p @ EmbeddingProviderType::Jina)
+				| Ok(ref p @ EmbeddingProviderType::Voyage)
+				| Ok(ref p @ EmbeddingProviderType::Google) => {
+					let api_key_status = if config.embedding.get_api_key(p).is_some() {
+						"✅ Set"
+					} else {
+						"❌ Not set"
+					};
+					println!("   API key: {}", api_key_status);
+				}
+				_ => {
+					println!("   API key: Not required");
+				}
 			}
 		}
 		println!();
@@ -234,23 +243,21 @@ pub fn execute(args: &ConfigArgs, mut config: Config) -> Result<()> {
 	}
 
 	if let Some(code_model) = &args.code_embedding_model {
-		// Parse provider from the model string and set the code model
-		let (provider, _) = parse_provider_model(code_model)?;
+		let provider_info = validate_embedding_model(code_model)?;
 		config.embedding.code_model = code_model.clone();
 		println!(
-			"Code embedding model set to: {} (provider: {:?})",
-			code_model, provider
+			"Code embedding model set to: {} (provider: {})",
+			code_model, provider_info
 		);
 		updated = true;
 	}
 
 	if let Some(text_model) = &args.text_embedding_model {
-		// Parse provider from the model string and set the text model
-		let (provider, _) = parse_provider_model(text_model)?;
+		let provider_info = validate_embedding_model(text_model)?;
 		config.embedding.text_model = text_model.clone();
 		println!(
-			"Text embedding model set to: {} (provider: {:?})",
-			text_model, provider
+			"Text embedding model set to: {} (provider: {})",
+			text_model, provider_info
 		);
 		updated = true;
 	}
