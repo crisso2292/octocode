@@ -82,10 +82,14 @@ pub async fn generate_embedding(text: &str, model: &str) -> Result<Vec<f32>> {
 		.ok_or_else(|| anyhow::anyhow!("Azure OpenAI returned empty embedding result"))
 }
 
+/// Maximum retries for rate-limited requests
+const MAX_RETRIES: u32 = 5;
+
 /// Generate embeddings for a batch of texts using Azure OpenAI.
 ///
 /// Uses the Azure OpenAI REST API with api-version 2024-02-01.
 /// The deployment name is derived from the model name.
+/// Automatically retries on 429 rate limit errors with exponential backoff.
 pub async fn generate_embeddings_batch(
 	texts: Vec<String>,
 	model: &str,
@@ -97,14 +101,11 @@ pub async fn generate_embeddings_batch(
 
 	let (api_key, endpoint) = get_credentials()?;
 
-	// Apply input_type prefix for asymmetric search (Azure doesn't have native input_type)
 	let processed_texts: Vec<String> = texts
 		.into_iter()
 		.map(|text| input_type.apply_prefix(&text))
 		.collect();
 
-	// Azure OpenAI uses deployment names that typically match model names
-	// URL format: {endpoint}/openai/deployments/{deployment}/embeddings?api-version=2024-02-01
 	let url = format!(
 		"{}/openai/deployments/{}/embeddings?api-version=2024-02-01",
 		endpoint, model
@@ -114,19 +115,40 @@ pub async fn generate_embeddings_batch(
 		"input": processed_texts,
 	});
 
-	let response = HTTP_CLIENT
-		.post(&url)
-		.header("api-key", &api_key)
-		.header("Content-Type", "application/json")
-		.json(&request_body)
-		.send()
-		.await
-		.map_err(|e| anyhow::anyhow!("Azure OpenAI request failed: {}", e))?;
+	// Retry loop for rate limiting (429)
+	let mut last_error = String::new();
+	for attempt in 0..MAX_RETRIES {
+		let response = HTTP_CLIENT
+			.post(&url)
+			.header("api-key", &api_key)
+			.header("Content-Type", "application/json")
+			.json(&request_body)
+			.send()
+			.await
+			.map_err(|e| anyhow::anyhow!("Azure OpenAI request failed: {}", e))?;
 
-	let status = response.status();
-	let response_text = response.text().await?;
+		let status = response.status();
+		let response_text = response.text().await?;
 
-	if !status.is_success() {
+		if status.is_success() {
+			// Parse and return on success — break out of retry loop
+			return parse_embedding_response(&response_text);
+		}
+
+		if status.as_u16() == 429 {
+			// Rate limited — extract retry-after or use exponential backoff
+			let wait_secs = extract_retry_after(&response_text)
+				.unwrap_or(2u64.pow(attempt).min(30));
+			tracing::warn!(
+				"Azure rate limited (attempt {}/{}), waiting {}s",
+				attempt + 1, MAX_RETRIES, wait_secs
+			);
+			tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+			last_error = response_text;
+			continue;
+		}
+
+		// Non-retryable error
 		return Err(anyhow::anyhow!(
 			"Azure OpenAI API error ({}): {}",
 			status,
@@ -134,7 +156,16 @@ pub async fn generate_embeddings_batch(
 		));
 	}
 
-	let response_json: serde_json::Value = serde_json::from_str(&response_text)
+	Err(anyhow::anyhow!(
+		"Azure OpenAI rate limit exceeded after {} retries: {}",
+		MAX_RETRIES,
+		last_error
+	))
+
+}
+
+fn parse_embedding_response(response_text: &str) -> Result<Vec<Vec<f32>>> {
+	let response_json: serde_json::Value = serde_json::from_str(response_text)
 		.map_err(|e| anyhow::anyhow!("Failed to parse Azure OpenAI response: {}", e))?;
 
 	let data = response_json["data"]
@@ -152,7 +183,6 @@ pub async fn generate_embeddings_batch(
 		embeddings.push(embedding);
 	}
 
-	// Azure returns results sorted by index, but let's ensure correct ordering
 	let mut sorted_embeddings = vec![Vec::new(); embeddings.len()];
 	for (i, item) in data.iter().enumerate() {
 		let index = item["index"].as_u64().unwrap_or(i as u64) as usize;
@@ -162,6 +192,18 @@ pub async fn generate_embeddings_batch(
 	}
 
 	Ok(sorted_embeddings)
+}
+
+/// Extract "retry after N seconds" from Azure error response text.
+fn extract_retry_after(response_text: &str) -> Option<u64> {
+	// Pattern: "Please retry after N seconds"
+	if let Some(pos) = response_text.find("retry after ") {
+		let after = &response_text[pos + 12..];
+		let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+		num_str.parse().ok()
+	} else {
+		None
+	}
 }
 
 #[cfg(test)]
