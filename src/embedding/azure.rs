@@ -101,9 +101,10 @@ pub async fn generate_embeddings_batch(
 
 	let (api_key, endpoint) = get_credentials()?;
 
-	// Azure text-embedding-3-large has an 8192 token limit per input.
-	// Truncate each text to ~7000 tokens (~28000 chars) to stay under the limit.
-	const MAX_CHARS_PER_INPUT: usize = 28_000;
+	// Azure text-embedding-3-large has an 8192 token limit for the ENTIRE request
+	// (all inputs combined). Truncate each input to ~6000 chars (~1500 tokens)
+	// so a batch of 4 stays well under 8192 tokens total.
+	const MAX_CHARS_PER_INPUT: usize = 6_000;
 
 	let processed_texts: Vec<String> = texts
 		.into_iter()
